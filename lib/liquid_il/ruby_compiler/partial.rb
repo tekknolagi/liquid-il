@@ -157,6 +157,9 @@ module LiquidIL
         # their literals inline until that cache carries a relocatable constant
         # table. The root template still pools its own large raw literals.
         ruby_compiler.instance_variable_set(:@pool_literals, false)
+        # Partial bodies become hoisted defs (or are inlined); neither may
+        # reference the entry point's per-render filter caches.
+        ruby_compiler.instance_variable_set(:@no_filter_cache, true)
         # Unique loop-naming base per partial source (process-wide, stable for
         # process-cache hits) — prevents loop-local collisions when this
         # body is inlined inside a caller's loop. Minting is mutex-guarded:
@@ -316,37 +319,32 @@ module LiquidIL
         true
       end
 
-      # Generate lambda definitions for compiled partials
+      # Generate singleton-method definitions for compiled partials on the
+      # artifact module. Defs resolve by name at call time, so mutually
+      # referencing partials need no forward declaration.
       def generate_partial_lambdas
         return "" if @partials.empty?
 
         required = @lambda_called
 
         code = String.new
-        code << "\n  # Compiled partial lambdas\n" if @pretty
-        # Forward-declare all lambda variables so mutual references work
-        @partials.each do |name, info|
-          next if info[:recursive] || info[:syntax_error] || info[:external]
-          code << "  #{partial_lambda_name(name)} = nil\n"
-        end
-        code << "\n"
+        code << "\n  # Compiled partial defs\n" if @pretty
 
         @partials.each do |name, info|
           next if info[:recursive] || info[:syntax_error] || !info[:compiled_body]
-          # Emit the lambda body only when some call site actually calls it
-          # (a partial can be inlined at one site and lambda-called at another).
-          # The forward declaration (nil) is already generated above.
+          # Emit the def only when some call site actually calls it (a partial
+          # can be inlined at one site and def-called at another).
           next unless required.include?(name)
           lambda_name = partial_lambda_name(name)
           # All prologue/rescue/ensure bookkeeping lives in the (already-jitted)
-          # runtime wrapper _H.ipc at the call sites — zero artifact bytes per
-          # lambda for it, and no nested block ISeq inside the lambda.
+          # runtime wrapper _H.ipcm at the call sites — zero artifact bytes per
+          # def for it, and no nested block ISeq inside the def.
           # Error locations inside the body are compile-time literals, so the
-          # lambda carries no source/current-file state.
-          # The scope arrives as the _S parameter (built by _H.ipc), which
-          # shadows the outer proc's _S — partial bodies splice verbatim,
-          # no scope-variable renaming.
-          code << "  #{lambda_name} = ->(_S, _O, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
+          # def carries no source/current-file state.
+          # The scope arrives as the _S parameter (built by _H.ipcm); partial
+          # bodies splice verbatim, no scope-variable renaming.
+          code << "  def self.#{lambda_name}(_S, _O, isolated, caller_line: 1, parent_cycle_state: nil)\n"
+          code << def_helper_prologue(info[:compiled_body], "    ")
           # Only allocate cycle/capture/ifchanged state when the partial actually uses them
           if info[:uses_cycles]
             code << "    _cs = isolated ? {} : (parent_cycle_state || {})\n"
@@ -358,7 +356,7 @@ module LiquidIL
             code << "    _ics = {}\n"
           end
           code << indent_partial_body(info[:compiled_body], 4)
-          code << "  }\n\n"
+          code << "  end\n\n"
         end
         code
       end
@@ -594,6 +592,7 @@ module LiquidIL
         emitter.instance_variable_set(:@frozen_arrays, {})
         # Cached bound bodies must not carry parent-relative literal-pool indexes.
         emitter.instance_variable_set(:@pool_literals, false)
+        emitter.instance_variable_set(:@no_filter_cache, true)
         emitter.instance_variable_set(:@loop_name_base, info[:loop_name_base] || 0)
         body = emitter.send(:generate_body)
         helpers = emitter.instance_variable_get(:@required_helpers)
@@ -777,9 +776,9 @@ module LiquidIL
           # include's scope publication + interrupt check all live in the
           # _H.rpf/_H.ipf drivers, not at every call site.
           expr = generate_var_lookup(for_expr)
-          helper = isolated ? "rpf" : "ipf"
+          helper = isolated ? "rpfm" : "ipfm"
           cycle_arg = @uses_cycles ? ", _cs" : ""
-          code << "#{prefix}_H.#{helper}(#{lambda_name}, #{name.inspect}, #{item_var.inspect}, #{expr}, __partial_args__, _O, _S, #{line_num}#{cycle_arg})\n"
+          code << "#{prefix}_H.#{helper}(self, :#{lambda_name}, #{name.inspect}, #{item_var.inspect}, #{expr}, __partial_args__, _O, _S, #{line_num}#{cycle_arg})\n"
         elsif with_expr
           # Render with a specific value
           # For isolated (render), we lookup here. For include, we already looked up above.
@@ -787,7 +786,7 @@ module LiquidIL
             expr = generate_var_lookup(with_expr)
             code << "#{prefix}__with_val__ = #{expr}\n"
             code << "#{prefix}__partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
-            code << "#{prefix}_H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+            code << "#{prefix}_H.ipcm(self, :#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
           else
             # For include, __with_val__ was already looked up BEFORE keyword args modified scope
             # Assign the with-value to the current scope so the partial can see it
@@ -795,12 +794,12 @@ module LiquidIL
             code << "#{prefix}  __with_val__.each do |_i_|\n"
             code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
             code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
-            code << "#{prefix}    _H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+            code << "#{prefix}    _H.ipcm(self, :#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
             code << "#{prefix}  end\n"
             code << "#{prefix}else\n"
             code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
             code << "#{prefix}  _S.assign(#{item_var.inspect}, __with_val__)\n"
-            code << "#{prefix}  _H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+            code << "#{prefix}  _H.ipcm(self, :#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
             code << "#{prefix}end\n"
           end
         else
@@ -818,7 +817,7 @@ module LiquidIL
             code << inline_bound_body
             code << "#{prefix}_S = #{scope_temp}\n"
           else
-            code << "#{prefix}_H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+            code << "#{prefix}_H.ipcm(self, :#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
           end
         end
 

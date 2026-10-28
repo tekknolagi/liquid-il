@@ -100,7 +100,7 @@ fast path or the full scope-synchronizing fallback.
 Static partials have three dispositions:
 
 - `inline`: compiled into the caller when structured IL analysis proves it safe
-- `lambda`: compiled once inside the artifact and called by runtime helpers
+- `lambda`: compiled once inside the artifact as a hoisted singleton `def` on the artifact module and called by runtime helpers (`_H.ipcm`)
 - `external`: represented by name/digest and supplied by a `PartialProvider`
 
 Bound isolated partials are lowered from IL against compiler-owned argument

@@ -41,7 +41,7 @@ module LiquidIL
     end
 
     module CodegenSymbols
-      FROZEN_ARRAYS = SymbolTable.new(4_096) { |id| "_fa#{id}__".freeze }
+      FROZEN_ARRAYS = SymbolTable.new(4_096) { |id| "@_fa#{id}__".freeze }
       PARTIAL_LOOP_BASES = SymbolTable.new(4_096) { |id| (id + 1) * 100 }
 
       ALL = [FROZEN_ARRAYS, PARTIAL_LOOP_BASES].freeze

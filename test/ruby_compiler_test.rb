@@ -95,9 +95,9 @@ class RubyCompilerTest < Minitest::Test
       src = (1..4).map { |i| "P#{i}{{ a#{i} }}.{% if b#{i} < 10 %}0{% endif %}{{ b#{i} }}Q#{i}" }.join
       t = LiquidIL::Compiler::Ruby.compile(src)
       code = t.compiled_source
-      assert_equal 1, code.scan(/_sq0__ = ->/).length, "expected exactly one sequence lambda"
-      assert_equal 1, code.scan(/_sq\d+__ = ->/).length, "expected no other sequences"
-      assert_equal 4, code.scan(/_sq0__\.call/).length, "expected one call per occurrence"
+      assert_equal 1, code.scan(/def self\._sq0__\(/).length, "expected exactly one sequence def"
+      assert_equal 1, code.scan(/def self\._sq\d+__\(/).length, "expected no other sequences"
+      assert_equal 4, code.scan(/^\s*_sq0__\(/).length, "expected one call per occurrence"
       assert_equal "P15.03Q1P27.12Q2P31.09Q3P42.40Q4",
         t.render("a1" => 5, "b1" => 3, "a2" => 7, "b2" => 12, "a3" => 1, "b3" => 9, "a4" => 2, "b4" => 40)
     end
@@ -112,7 +112,7 @@ class RubyCompilerTest < Minitest::Test
         "{% for z in zs %}{{ a#{i} }}.{% if b#{i} < 10 %}0{% endif %}{{ b#{i} }}{% break %}{% endfor %}"
       end.join
       t = LiquidIL::Compiler::Ruby.compile(src)
-      refute_match(/_sq\d+__ = ->/, t.compiled_source, "break-bearing blocks must not dedup")
+      refute_match(/def self\._sq\d+__\(/, t.compiled_source, "break-bearing blocks must not dedup")
       assert_equal "5.03", t.render("a1" => 5, "b1" => 3, "zs" => [1], "a2" => 5, "b2" => 3, "a3" => 5, "b3" => 3)[0, 4]
     end
   end
@@ -124,7 +124,7 @@ class RubyCompilerTest < Minitest::Test
     with_dedup do
       src = (1..4).map { |i| "{% assign m#{i} = k#{i} | plus: 1 %}[{{ m#{i} }}/{{ m#{i} }}]" }.join
       deduped = LiquidIL::Compiler::Ruby.compile(src)
-      assert_match(/_sq0__ = ->/, deduped.compiled_source, "expected the run to dedup")
+      assert_match(/def self\._sq0__\(/, deduped.compiled_source, "expected the run to dedup")
       assert_match(/_sqv1__/, deduped.compiled_source, "expected a dual local for the read-back target")
       assigns = { "k1" => 10, "k2" => 20, "k3" => 30, "k4" => 40 }
       unoptimized = LiquidIL::Compiler::Ruby.compile(src, optimize: false)

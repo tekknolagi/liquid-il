@@ -186,13 +186,42 @@ module LiquidIL
       end
     end
 
+    # ipcm / rpfm / ipfm: the in-artifact variants of ipc / rpf / ipf. A
+    # compiled partial is a singleton method `sym` on the artifact module
+    # `mod` (a hoisted def, not a Proc), dispatched with __send__ so the
+    # call-site emits one symbol instead of a closure. Kept separate from
+    # the Proc-taking drivers so each call site stays monomorphic.
+    def self.ipcm(mod, sym, name, assigns, output, scope, isolated, caller_line, cycle_state = nil)
+      inner = isolated ? scope.isolated_with(assigns) : scope
+      ip(name, scope, isolated, caller_line, output) do
+        mod.__send__(sym, inner, output, isolated, caller_line: caller_line, parent_cycle_state: cycle_state)
+      end
+    end
+
+    def self.rpfm(mod, sym, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil)
+      rpf(nil, name, item_name, coll, args, output, scope, caller_line, cycle_state, mod, sym)
+    end
+
+    def self.ipfm(mod, sym, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil)
+      ipf(nil, name, item_name, coll, args, output, scope, caller_line, cycle_state, mod, sym)
+    end
+
+    # Dispatch one partial invocation to whichever representation was given.
+    def self.ipc_any(partial, mod, sym, name, args, output, scope, isolated, caller_line, cycle_state)
+      if mod
+        ipcm(mod, sym, name, args, output, scope, isolated, caller_line, cycle_state)
+      else
+        ipc(partial, name, args, output, scope, isolated, caller_line, cycle_state)
+      end
+    end
+
     # rpf: driver for {% render 'x' for coll %} — the four-way collection
     # dispatch and per-item forloop drops live in the runtime instead of
     # ~28 emitted lines per call site. Isolated semantics: ranges and
     # enumerables iterate, nil calls once without the item, scalars pass
     # through as the item. Each item's call is separately error-wrapped
     # (one item failing still renders the rest under render_errors).
-    def self.rpf(partial, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil)
+    def self.rpf(partial, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil, mod = nil, sym = nil)
       items = if coll.is_a?(Array)
         coll
       elsif coll.is_a?(LiquidIL::RangeValue) || coll.is_a?(Range)
@@ -209,31 +238,31 @@ module LiquidIL
         while i < len
           args[item_name] = items[i]
           args["forloop"] = LiquidIL::ForloopDrop.new("forloop", len).tap { |f| f.index0 = i }
-          ipc(partial, name, args, output, scope, true, caller_line, cycle_state)
+          ipc_any(partial, mod, sym, name, args, output, scope, true, caller_line, cycle_state)
           i += 1
         end
       else
-        ipc(partial, name, args, output, scope, true, caller_line, cycle_state)
+        ipc_any(partial, mod, sym, name, args, output, scope, true, caller_line, cycle_state)
       end
     end
 
     # ipf: {% include 'x' for coll %} — include iterates Arrays only (ranges
     # and other enumerables pass through as the item), publishes the item to
     # the caller scope, and stops when the partial sets an interrupt.
-    def self.ipf(partial, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil)
+    def self.ipf(partial, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil, mod = nil, sym = nil)
       if coll.is_a?(Array)
         coll.each do |item|
           args[item_name] = item
           scope.assign(item_name, item)
-          ipc(partial, name, args, output, scope, false, caller_line, cycle_state)
+          ipc_any(partial, mod, sym, name, args, output, scope, false, caller_line, cycle_state)
           break if scope.has_interrupt?
         end
       elsif coll.nil?
-        ipc(partial, name, args, output, scope, false, caller_line, cycle_state)
+        ipc_any(partial, mod, sym, name, args, output, scope, false, caller_line, cycle_state)
       else
         args[item_name] = coll
         scope.assign(item_name, coll)
-        ipc(partial, name, args, output, scope, false, caller_line, cycle_state)
+        ipc_any(partial, mod, sym, name, args, output, scope, false, caller_line, cycle_state)
       end
     end
 

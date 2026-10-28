@@ -475,7 +475,9 @@ module LiquidIL
     private
 
     def generate_standalone_ruby(module_name)
-      proc_body = extract_proc_body(@compiled_source)
+      # The compiled source is a single `Module.new do ... end` expression
+      # (hoisted defs + `call(_S, _pc)`); embed it whole as COMPILED.
+      compiled = @compiled_source.sub(/\A# frozen_string_literal: true\n/, "")
 
       <<~RUBY
         # frozen_string_literal: true
@@ -495,18 +497,12 @@ module LiquidIL
 
           PARTIAL_CONSTANTS = #{@partial_constants.inspect}.freeze
 
+          COMPILED = #{indent_body(compiled, 2).lstrip}
+
           def self.render(assigns = {}, render_errors: true)
             __scope__ = LiquidIL::Scope.new(assigns)
             __scope__.render_errors = render_errors
-            __partial_constants__ = PARTIAL_CONSTANTS
-
-            # Match compiler-generated local names used in proc source.
-            _S = __scope__
-            _pc = __partial_constants__
-
-        #{indent_body(proc_body, 4)}
-
-            _O
+            COMPILED.call(__scope__, PARTIAL_CONSTANTS)
           rescue LiquidIL::RuntimeError => e
             raise unless render_errors
             output = e.partial_output || ""
@@ -518,17 +514,6 @@ module LiquidIL
           end
         end
       RUBY
-    end
-
-    def extract_proc_body(source)
-      lines = source.lines
-      start_idx = lines.index { |l| l.match?(/^proc do \|/) }
-      return "" unless start_idx
-
-      body_lines = lines[(start_idx + 1)..]
-      # Remove trailing __output__ and end
-      body_lines.pop while body_lines.last&.match?(/^\s*(end|__output__)\s*$/)
-      body_lines.join
     end
 
     def indent_body(code, extra_spaces)

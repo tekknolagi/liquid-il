@@ -227,22 +227,26 @@ module LiquidIL
       # composite cache keying / external prefetch. Metadata only.
       @partial_dependencies = compute_partial_dependencies
 
+      # Artifact shape: ONE anonymous module whose singleton carries every
+      # compiled unit as a hoisted `def` — partial bodies, deduplicated
+      # statement runs, and the entry point `call(_S, _pc = nil)`. The eval'd
+      # ISeq returns the module, which duck-types as the old proc (`.call`).
+      # Defs instead of closures: nothing is re-created per render (a lambda
+      # literal allocates a Proc + escapes the frame's env on every render),
+      # calls are plain method dispatch the JIT inlines, and there is no
+      # declaration-order coupling between helpers and the prologue. Frozen
+      # argument arrays are module ivars set once at eval, so every unit
+      # shares them with zero per-render allocation.
       code = String.new
-      has_pc = !@partial_constants.empty?
       code << "# frozen_string_literal: true\n"
-      if has_pc
-        code << "proc do |_S, _pc|\n"
-      else
-        code << "proc do |_S|\n"
-      end
-      code << "  _H = LiquidIL::RuntimeHelpers\n"
-      code << "  _U = LiquidIL::Utils\n" if @required_helpers.include?(:utils)
-      code << "  _F = LiquidIL::Filters\n" if @required_helpers.include?(:filters)
-      # Frozen array constants and sequence lambdas must be declared before
-      # partial lambdas and the body (all are closures that capture them).
+      code << "Module.new do\n"
       code << generate_frozen_array_constants
       code << seq_code
       code << partial_code
+      code << "  def self.call(_S, _pc = nil)\n"
+      code << "  _H = LiquidIL::RuntimeHelpers\n"
+      code << "  _U = LiquidIL::Utils\n" if @required_helpers.include?(:utils)
+      code << "  _F = LiquidIL::Filters\n" if @required_helpers.include?(:filters)
       code << "  _O = +\"\"\n"
       # Pre-initialize filter caches to avoid ||= check per iteration
       @required_filter_caches.each do |cache_var|
@@ -257,7 +261,19 @@ module LiquidIL
       end
       code << body_code
       code << "\n  _O\n"
+      code << "  end\n"
       code << "end\n"
+      code
+    end
+
+    # Emit the `_H`/`_F`/`_U` aliases a hoisted def body needs. Defs don't
+    # close over the entry point's locals, so each unit rebinds the handful
+    # it uses (a constant-path read per invocation, inline-cached by the JIT).
+    def def_helper_prologue(body, indent)
+      code = String.new
+      code << "#{indent}_H = LiquidIL::RuntimeHelpers\n" if body.include?("_H.")
+      code << "#{indent}_F = LiquidIL::Filters\n" if body.include?("_F.")
+      code << "#{indent}_U = LiquidIL::Utils\n" if body.include?("_U.")
       code
     end
 

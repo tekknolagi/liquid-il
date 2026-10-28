@@ -7,23 +7,30 @@ module LiquidIL
     module StatementEmitter
       private
 
-      # Emit the artifact-local sequence lambdas registered by StatementDedup.
-      # Placed after frozen-array constants and before partial lambdas so their
-      # bodies (which may reference _fa constants and _H/_F helpers) resolve.
+      # Emit the artifact-local sequence defs registered by StatementDedup as
+      # singleton methods on the artifact module. A body that reads the
+      # literal pool takes `_pc` as a trailing parameter (defs don't close
+      # over the entry point's locals).
       def generate_sequence_lambdas
         return "" if @sequences.empty?
         code = String.new
-        code << "\n  # Deduplicated statement-run lambdas\n"
+        code << "\n  # Deduplicated statement-run defs\n"
         @sequences.each do |seq|
-          params = seq[:param_locals].join(", ")
-          sig = params.empty? ? "->(_O, _S)" : "->(_O, _S, #{params})"
-          code << "  #{seq[:name]} = #{sig} {\n"
+          params = seq[:param_locals].dup
+          params << "_pc" if seq_needs_pc?(seq)
+          sig = params.empty? ? "(_O, _S)" : "(_O, _S, #{params.join(', ')})"
+          code << "  def self.#{seq[:name]}#{sig}\n"
+          code << def_helper_prologue(seq[:body], "    ")
           # Dual locals for assign targets read back inside the run.
           seq[:dual_slots].each { |slot| code << "    _sqv#{slot}__ = nil\n" }
           code << seq[:body]
-          code << "  }\n"
+          code << "  end\n"
         end
         code
+      end
+
+      def seq_needs_pc?(seq)
+        seq[:body].include?("_pc[")
       end
 
       # Emit a CALL_SEQ site: pass input args by value (through scope_lookup so
@@ -39,8 +46,9 @@ module LiquidIL
             lit(arg[1])
           end
         end
+        args << "_pc" if seq_needs_pc?(seq)
         argstr = args.empty? ? "" : ", #{args.join(", ")}"
-        "#{INDENT[indent]}#{seq[:name]}.call(_O, _S#{argstr})\n"
+        "#{INDENT[indent]}#{seq[:name]}(_O, _S#{argstr})\n"
       end
 
       # Fold a sequence body's effects into the enclosing frame (same merge logic

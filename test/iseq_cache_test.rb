@@ -45,7 +45,7 @@ class IseqBinaryTest < Minitest::Test
     t = LiquidIL.parse("Hello {{ name }}")
     iseq = RubyVM::InstructionSequence.load_from_binary(t.iseq_binary)
     result = iseq.eval
-    assert_kind_of Proc, result
+    assert_respond_to result, :call
   end
 end
 

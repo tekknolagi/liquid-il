@@ -8,7 +8,10 @@ module LiquidIL
       fragment = CodeFragment.wrap(expression)
       source = fragment.source
 
-      if fragment.cache_filter && (cache_var = FilterEmitter::FILTER_CACHE[fragment.cache_filter])
+      # Per-render filter caches are locals of the entry point; hoisted def
+      # bodies (partials, deduplicated runs) can't see them, so they emit the
+      # plain filter call instead.
+      if fragment.cache_filter && !@no_filter_cache && (cache_var = FilterEmitter::FILTER_CACHE[fragment.cache_filter])
         require_filter_cache(cache_var)
         input = fragment.cache_input
         source = "(#{cache_var}[(_v = #{input}.to_liquid_s)] || (#{cache_var}[_v] = _v.#{fragment.cache_filter}))"

@@ -186,7 +186,7 @@ class TemplateIntrospectionTest < Minitest::Test
   def test_template_has_compiled_source
     t = LiquidIL::Template.parse("hello")
     assert_kind_of String, t.compiled_source
-    assert_includes t.compiled_source, "proc do"
+    assert_includes t.compiled_source, "def self.call(_S, _pc = nil)"
   end
 
   def test_template_has_instructions

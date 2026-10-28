@@ -1,0 +1,81 @@
+---
+_metadata:
+  hint: >-
+    Compiled units hoisted out of the entry point (def-called partials and
+    deduplicated statement runs) must not reference the entry point's
+    per-render filter-cache locals (_UP__, _DOWN__, _CAP__, _STRIP__ ...).
+    Under the old closure layout those locals were assigned AFTER the lambda
+    text, so Ruby parsed the name inside the lambda as a method call and the
+    render raised NameError ("undefined local variable or method '_UP__'").
+    Hoisted defs cannot see those locals at all, so the emitter must emit the
+    plain filter call inside them.
+  render_errors: true
+specs:
+# Root cause: FilterEmitter's per-render result cache rewrites `x | upcase`
+# into `(_UP__[(_v = x)] || (_UP__[_v] = _v.upcase))`, and the `_UP__ = {}`
+# prologue line lives in the entry point. Any unit emitted as a separate
+# callable (partial def, dedup sequence def) must bypass the cache.
+#
+# `render ... for` never inlines, so the partial is always def-called here.
+- name: cached_filter_upcase_inside_def_called_partial
+  template: "{% render 'card' for items %}"
+  environment:
+    items:
+      - name: ann
+      - name: bob
+  filesystem:
+    card: "<{{ card.name | upcase }}>"
+  expected: "<ANN><BOB>"
+
+- name: cached_filter_downcase_inside_def_called_partial
+  template: "{% render 'card' for items %}"
+  environment:
+    items:
+      - name: ANN
+      - name: BOB
+  filesystem:
+    card: "<{{ card.name | downcase }}>"
+  expected: "<ann><bob>"
+
+- name: cached_filter_capitalize_inside_def_called_partial
+  template: "{% render 'card' for items %}"
+  environment:
+    items:
+      - name: ann
+      - name: bob
+  filesystem:
+    card: "<{{ card.name | capitalize }}>"
+  expected: "<Ann><Bob>"
+
+- name: cached_filter_strip_inside_def_called_partial
+  template: "{% render 'card' for items %}"
+  environment:
+    items:
+      - name: "  ann "
+      - name: " bob  "
+  filesystem:
+    card: "<{{ card.name | strip }}>"
+  expected: "<ann><bob>"
+
+# A partial that uses cycle (so it is never inlined) and a cached filter,
+# called from inside a loop: the shape that first surfaced the NameError.
+- name: cached_filter_inside_cycling_partial_in_loop
+  template: "{% for item in items %}{% render 'row', item: item %}{% endfor %}"
+  environment:
+    items:
+      - name: x
+      - name: y
+  filesystem:
+    row: "<li>{{ item.name | upcase }} {% cycle 1,2 %}</li>"
+  expected: "<li>X 1</li><li>Y 1</li>"
+
+# Deduplicated statement run (>= 3 identical runs of >= 5 instructions)
+# containing a cached filter. The run body is hoisted into a sequence def.
+- name: cached_filter_inside_deduplicated_statement_run
+  template: >-
+    {% assign t = x | plus: 1 %}{{ t | times: 2 }}<b>{{ y.name | downcase }}</b>{{ z | default: "n/a" }}|{% assign t = x | plus: 1 %}{{ t | times: 2 }}<b>{{ y.name | downcase }}</b>{{ z | default: "n/a" }}|{% assign t = x | plus: 1 %}{{ t | times: 2 }}<b>{{ y.name | downcase }}</b>{{ z | default: "n/a" }}|{% assign t = x | plus: 1 %}{{ t | times: 2 }}<b>{{ y.name | downcase }}</b>{{ z | default: "n/a" }}
+  environment:
+    x: 1
+    y:
+      name: Q
+  expected: "4<b>q</b>n/a|4<b>q</b>n/a|4<b>q</b>n/a|4<b>q</b>n/a"

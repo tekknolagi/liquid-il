@@ -52,7 +52,7 @@ class IseqPersistenceTest < Minitest::Test
       template.write_iseq(path)
 
       proc_obj = RubyVM::InstructionSequence.load_from_binary(File.binread(path)).eval
-      assert_kind_of Proc, proc_obj
+      assert_respond_to proc_obj, :call
 
       scope = LiquidIL::Scope.new({ "name" => "Ruby" })
       out = proc_obj.call(scope)

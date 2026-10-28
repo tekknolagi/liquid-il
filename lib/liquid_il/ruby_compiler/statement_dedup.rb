@@ -594,11 +594,13 @@ module LiquidIL
         saved_effects = @effects
         saved_aliases = @loop_var_aliases
         saved_interrupts = @uses_interrupts
+        saved_no_cache = @no_filter_cache
 
         @instructions = abstract
         @pc = 0
         @loop_var_aliases = {}
         @uses_interrupts = false
+        @no_filter_cache = true
         @effects = [AnalysisEmitter::Effects.new] # throwaway parent to absorb the pop merge
         push_effects
 
@@ -620,6 +622,7 @@ module LiquidIL
         @effects = saved_effects
         @loop_var_aliases = saved_aliases
         @uses_interrupts = saved_interrupts
+        @no_filter_cache = saved_no_cache
         [code, effects]
       end
 
